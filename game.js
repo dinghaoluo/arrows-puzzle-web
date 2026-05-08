@@ -7,6 +7,8 @@ const GRID_DOT_COLOR = "#d2d2d7";
 const ARROW_COLOR = "#2d3446";
 const ARROW_ERROR_COLOR = "#dc3737";
 const ARROW_FLY_COLOR = "#b4b9c3";
+const HEART_COLOR = "#dc3741";
+const HEART_EMPTY_COLOR = "#d7d7dc";
 const HUD_TEXT_COLOR = "#646973";
 
 const ARROW_HEAD_SIZE = 0.82;
@@ -26,6 +28,7 @@ const MAX_ZOOM = 5.0;
 const ZOOM_STEP = 1.15;
 const ERROR_FLASH_DURATION = 0.5;
 const FLY_OFF_DURATION = 0.6;
+const EASY_LIVES = 5;
 
 const DIRECTION_VECTORS = { up: [-1, 0], down: [1, 0], left: [0, -1], right: [0, 1] };
 const DIRECTION_NAMES = ["up", "down", "left", "right"];
@@ -37,6 +40,8 @@ const PUZZLE_CACHE = new Map();
 const Phase = {
   MAIN_MENU: 0,
   PLAYING: 2,
+  ANIMATING: 3,
+  GAME_OVER: 5,
 };
 
 // arrow
@@ -243,11 +248,13 @@ class GameController {
   constructor() {
     this.phase = Phase.MAIN_MENU;
     this.currentLevel = 1;
+    this.lives = EASY_LIVES;
     this.board = null;
   }
 
   async startLevel(level) {
     this.currentLevel = level;
+    this.lives = EASY_LIVES;
     this.phase = Phase.PLAYING;
 
     try {
@@ -264,15 +271,18 @@ class GameController {
   }
 
   handleClick(row, col) {
-    if (this.phase !== Phase.PLAYING || !this.board) return;
+    if ((this.phase !== Phase.PLAYING && this.phase !== Phase.ANIMATING) || !this.board) return;
     const arrow = this.board.getArrowAt(row, col);
     if (!arrow || !arrow.alive || arrow.animatingFlyOff) return;
 
     if (this.board.isPathClear(arrow)) {
       arrow.animatingFlyOff = true;
       arrow.flyProgress = 0;
+      this.phase = Phase.ANIMATING;
     } else {
       arrow.errorTimer = ERROR_FLASH_DURATION;
+      this.lives--;
+      if (this.lives <= 0) this.phase = Phase.GAME_OVER;
     }
   }
 
@@ -291,11 +301,29 @@ class GameController {
         anyAnim = true;
       }
     }
+    if (this.phase === Phase.ANIMATING && !anyAnim) {
+      if (this.board.isEmpty()) {
+        this.phase = Phase.MAIN_MENU;
+      } else {
+        this.phase = Phase.PLAYING;
+      }
+    }
     return anyAnim;
   }
+
+  restartLevel() { this.startLevel(this.currentLevel); }
 }
 
 // drawing helpers
+function lerpColor(c1, c2, t) {
+  const p = (s) => parseInt(s, 16);
+  const h1 = c1.replace("#", ""), h2 = c2.replace("#", "");
+  const r = Math.round(p(h1.slice(0, 2)) + (p(h2.slice(0, 2)) - p(h1.slice(0, 2))) * t);
+  const g = Math.round(p(h1.slice(2, 4)) + (p(h2.slice(2, 4)) - p(h1.slice(2, 4))) * t);
+  const b = Math.round(p(h1.slice(4, 6)) + (p(h2.slice(4, 6)) - p(h1.slice(4, 6))) * t);
+  return `rgb(${r},${g},${b})`;
+}
+
 function smoothPolyline(centers, cr) {
   if (centers.length <= 2 || cr <= 0) return centers;
   const result = [centers[0]];
@@ -321,6 +349,22 @@ function smoothPolyline(centers, cr) {
   }
   result.push(centers[centers.length - 1]);
   return result;
+}
+
+function drawArrowBody(ctx, points, color, width, alpha, cr) {
+  if (points.length < 2) return;
+  const pts = cr > 0 ? smoothPolyline(points, cr) : points;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.beginPath();
+  ctx.moveTo(pts[0][0], pts[0][1]);
+  for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+  ctx.stroke();
+  ctx.restore();
 }
 
 function drawArrowhead(ctx, cx, cy, size, direction, color, alpha) {
@@ -356,6 +400,48 @@ function arrowBodyWidth(screenCellSize) {
   const scaledWidth = Math.max(ARROW_BODY_MIN_SCREEN_WIDTH, screenCellSize * ARROW_BODY_WIDTH_RATIO);
   const separationCap = Math.max(0.45, screenCellSize * ARROW_BODY_MAX_CELL_RATIO);
   return Math.min(scaledWidth, separationCap);
+}
+
+function drawHeart(ctx, cx, cy, size, color) {
+  const r = size * 0.28;
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  ctx.arc(cx - r * 0.7, cy - r * 0.15, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(cx + r * 0.7, cy - r * 0.15, r, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(cx - size * 0.42, cy + size * 0.05);
+  ctx.lineTo(cx + size * 0.42, cy + size * 0.05);
+  ctx.lineTo(cx, cy + size * 0.48);
+  ctx.closePath();
+  ctx.fill();
+}
+
+// arc-length utils for fly-off
+function arcLengths(wp) {
+  const a = [0];
+  for (let i = 1; i < wp.length; i++) {
+    a.push(a[i - 1] + Math.hypot(wp[i][0] - wp[i - 1][0], wp[i][1] - wp[i - 1][1]));
+  }
+  return a;
+}
+
+function pointAtDist(wp, arc, dist) {
+  if (dist <= 0) return wp[0];
+  if (dist >= arc[arc.length - 1]) return wp[wp.length - 1];
+  let lo = 0, hi = arc.length - 1;
+  while (lo < hi - 1) {
+    const mid = (lo + hi) >> 1;
+    if (arc[mid] <= dist) lo = mid; else hi = mid;
+  }
+  const seg = arc[hi] - arc[lo];
+  const t = seg > 0 ? (dist - arc[lo]) / seg : 0;
+  return [
+    wp[lo][0] + (wp[hi][0] - wp[lo][0]) * t,
+    wp[lo][1] + (wp[hi][1] - wp[lo][1]) * t,
+  ];
 }
 
 // renderer
@@ -432,6 +518,9 @@ class Renderer {
         this._drawGridDots(ctx, ctrl);
         this._drawArrows(ctx, ctrl);
       }
+      if (ctrl.phase === Phase.GAME_OVER) {
+        this._drawOverlay(ctx, "Game Over", ARROW_ERROR_COLOR, "Tap to retry");
+      }
     }
   }
 
@@ -491,7 +580,17 @@ class Renderer {
 
     const useSmooth = cs >= 8;
     const drawHeads = headSize >= 3;
+    const errorArrows = [];
+    const flyArrows = [];
+    const normalArrows = [];
 
+    for (const arrow of arrows) {
+      if (arrow.animatingFlyOff) { flyArrows.push(arrow); continue; }
+      if (arrow.errorTimer > 0) { errorArrows.push(arrow); continue; }
+      normalArrows.push(arrow);
+    }
+
+    // Normal arrows
     ctx.strokeStyle = ARROW_COLOR;
     ctx.lineWidth = bw;
     ctx.lineCap = "round";
@@ -500,8 +599,7 @@ class Renderer {
 
     const headBuf = drawHeads ? [] : null;
 
-    for (const arrow of arrows) {
-      if (arrow.animatingFlyOff) continue;
+    for (const arrow of normalArrows) {
       const cells = arrow.cells;
       if (useSmooth) {
         const wpts = arrow.smoothWorld(crWorld);
@@ -534,6 +632,53 @@ class Renderer {
       }
       ctx.fill();
     }
+
+    // Error arrows
+    for (const arrow of errorArrows) {
+      const t = arrow.errorTimer / ERROR_FLASH_DURATION;
+      const shake = Math.sin(t * Math.PI * 8) * Math.max(1, cs * 0.08);
+      ctx.strokeStyle = ARROW_ERROR_COLOR;
+      ctx.lineWidth = bw;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      ctx.beginPath();
+      const cells = arrow.cells;
+      if (useSmooth) {
+        const wpts = arrow.smoothWorld(crWorld);
+        ctx.moveTo(wpts[0][0] * z + oox + shake, wpts[0][1] * z + ooy);
+        for (let i = 1; i < wpts.length; i++) {
+          ctx.lineTo(wpts[i][0] * z + oox + shake, wpts[i][1] * z + ooy);
+        }
+      } else {
+        ctx.moveTo((cells[0][1] * csW + hcs) * z + oox + shake, (cells[0][0] * csW + hcs) * z + ooy);
+        for (let i = 1; i < cells.length; i++) {
+          ctx.lineTo((cells[i][1] * csW + hcs) * z + oox + shake, (cells[i][0] * csW + hcs) * z + ooy);
+        }
+      }
+      ctx.stroke();
+      if (drawHeads) {
+        let lhx, lhy;
+        if (useSmooth) {
+          const wpts = arrow.smoothWorld(crWorld);
+          const last = wpts[wpts.length - 1];
+          lhx = last[0] * z + oox + shake; lhy = last[1] * z + ooy;
+        } else {
+          const lc = cells[cells.length - 1];
+          lhx = (lc[1] * csW + hcs) * z + oox + shake; lhy = (lc[0] * csW + hcs) * z + ooy;
+        }
+        ctx.fillStyle = ARROW_ERROR_COLOR;
+        ctx.beginPath();
+        this._addHeadPath(ctx, lhx, lhy, headSize, arrow.direction);
+        ctx.fill();
+      }
+    }
+
+    // Fly-off arrows
+    for (const arrow of flyArrows) {
+      const centers = arrow.cells.map(([r, c]) => this.cellCenter(r, c));
+      const cr = cs * ARROW_CORNER_RADIUS_RATIO;
+      this._drawArrowFlying(ctx, arrow, centers, cs, headSize, cr, bw);
+    }
   }
 
   _addHeadPath(ctx, cx, cy, size, direction) {
@@ -550,6 +695,65 @@ class Renderer {
     }
     ctx.closePath();
   }
+
+  _drawArrowFlying(ctx, arrow, centers, cs, headSize, cr, bw) {
+    const progress = arrow.flyProgress;
+    const eased = 1 - (1 - progress) ** 2.5;
+    const [dr, dc] = DIRECTION_VECTORS[arrow.direction];
+    const n = centers.length;
+    const extra = n + 5;
+
+    const rawWp = [...centers];
+    const [hx, hy] = centers[n - 1];
+    for (let k = 1; k <= extra; k++) {
+      rawWp.push([hx + dc * cs * k, hy + dr * cs * k]);
+    }
+
+    const waypoints = cr > 0 ? smoothPolyline(rawWp, cr) : rawWp;
+    const arc = arcLengths(waypoints);
+    const rawArc = arcLengths(rawWp);
+    const advanceDist = eased * extra * cs;
+
+    const cellPos = [];
+    const cellDists = [];
+    for (let i = 0; i < n; i++) {
+      const d = rawArc[i] + advanceDist;
+      cellDists.push(d);
+      cellPos.push(pointAtDist(waypoints, arc, d));
+    }
+
+    const dense = [];
+    for (let i = 0; i < n; i++) {
+      if (i > 0) {
+        for (let j = 0; j < arc.length; j++) {
+          if (cellDists[i - 1] < arc[j] && arc[j] < cellDists[i]) {
+            dense.push(waypoints[j]);
+          }
+        }
+      }
+      dense.push(cellPos[i]);
+    }
+
+    const alpha = Math.max(0, 1 - eased * 0.8);
+    const color = lerpColor(ARROW_COLOR, ARROW_FLY_COLOR, eased * 0.6);
+    drawArrowBody(ctx, dense, color, bw, alpha, 0);
+    const [fx, fy] = cellPos[cellPos.length - 1];
+    drawArrowhead(ctx, fx, fy, headSize, arrow.direction, color, alpha);
+  }
+
+  _drawOverlay(ctx, title, color, hint) {
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.82)";
+    ctx.fillRect(0, 0, this._w, this._h);
+    ctx.fillStyle = color;
+    ctx.textAlign = "center";
+    ctx.font = "bold 36px Arial, sans-serif";
+    ctx.fillText(title, this._w / 2, this._h / 2 - 10);
+    ctx.fillStyle = HUD_TEXT_COLOR;
+    ctx.font = "16px Arial, sans-serif";
+    ctx.fillText(hint, this._w / 2, this._h / 2 + 30);
+    ctx.restore();
+  }
 }
 
 // input handling
@@ -560,7 +764,11 @@ function setupInput(canvas, renderer, ctrl) {
       ctrl.startLevel(1);
       return;
     }
-    if (phase === Phase.PLAYING) {
+    if (phase === Phase.GAME_OVER) {
+      ctrl.restartLevel();
+      return;
+    }
+    if (phase === Phase.PLAYING || phase === Phase.ANIMATING) {
       renderer.camera.startDrag(x, y);
     }
   }
@@ -569,7 +777,7 @@ function setupInput(canvas, renderer, ctrl) {
     if (renderer.camera.isDragging) {
       const wasDrag = renderer.camera._dragMoved >= DRAG_THRESHOLD;
       renderer.camera.endDrag();
-      if (!wasDrag && ctrl.phase === Phase.PLAYING && ctrl.board) {
+      if (!wasDrag && (ctrl.phase === Phase.PLAYING || ctrl.phase === Phase.ANIMATING) && ctrl.board) {
         const cell = renderer.screenToCell(x, y, ctrl.board);
         if (cell) ctrl.handleClick(cell[0], cell[1]);
       }
@@ -596,7 +804,7 @@ function setupInput(canvas, renderer, ctrl) {
   // wheel zoom
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
-    if (ctrl.phase === Phase.PLAYING) {
+    if (ctrl.phase === Phase.PLAYING || ctrl.phase === Phase.ANIMATING) {
       renderer.camera.applyZoom(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
     }
     markDirty();
