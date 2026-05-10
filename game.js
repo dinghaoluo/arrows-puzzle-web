@@ -634,7 +634,20 @@ class Renderer {
       if (board.getArrowAt(row, col)) return [row, col];
     }
 
-    return null;
+    const cs = this.cellSize();
+    let bestDist = (cs * 0.6) ** 2;
+    let best = null;
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        const nr = row + dr, nc = col + dc;
+        if (nr >= 0 && nr < board.rows && nc >= 0 && nc < board.cols && board.getArrowAt(nr, nc)) {
+          const [ccx, ccy] = this.cellCenter(nr, nc);
+          const d2 = (x - ccx) ** 2 + (y - ccy) ** 2;
+          if (d2 < bestDist) { bestDist = d2; best = [nr, nc]; }
+        }
+      }
+    }
+    return best;
   }
 
   ensureCamera(ctrl) {
