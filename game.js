@@ -7,9 +7,11 @@ const GRID_DOT_COLOR = "#d2d2d7";
 const ARROW_COLOR = "#2d3446";
 const ARROW_ERROR_COLOR = "#dc3737";
 const ARROW_FLY_COLOR = "#b4b9c3";
-const HEART_COLOR = "#dc3741";
-const HEART_EMPTY_COLOR = "#d7d7dc";
 const HUD_TEXT_COLOR = "#646973";
+const LEVEL_COMPLETE_COLOR = "#37b45a";
+const LEVEL_COMPLETED_BTN = "#37b45a";
+const LEVEL_UNLOCKED_BTN = "#505a6e";
+const LEVEL_LOCKED_BTN = "#b4b4b9";
 
 const ARROW_HEAD_SIZE = 0.82;
 const ARROW_BODY_WIDTH_RATIO = 0.32;
@@ -28,7 +30,14 @@ const MAX_ZOOM = 5.0;
 const ZOOM_STEP = 1.15;
 const ERROR_FLASH_DURATION = 0.5;
 const FLY_OFF_DURATION = 0.6;
+const MAX_LEVEL = 54;
 const EASY_LIVES = 5;
+const HARD_LIVES = 3;
+
+const LEVEL_BTN_SIZE = 52;
+const LEVEL_BTN_GAP = 14;
+const LEVEL_BTN_COLS = 6;
+const LEVEL_SELECT_TOP = 90;
 
 const DIRECTION_VECTORS = { up: [-1, 0], down: [1, 0], left: [0, -1], right: [0, 1] };
 const DIRECTION_NAMES = ["up", "down", "left", "right"];
@@ -36,11 +45,29 @@ const DIRECTION_ANGLES = { right: 0, up: -Math.PI / 2, left: Math.PI, down: Math
 const MOVE_DELTAS = { U: [-1, 0], D: [1, 0], L: [0, -1], R: [0, 1] };
 const PUZZLE_CACHE = new Map();
 
+const LEVEL_CONFIGS = [
+  null, // index 0 unused
+  [60,80],[70,90],[80,80],[90,110],[100,100],
+  [100,120],[110,110],[120,140],[130,130],[140,140],
+  [140,170],[150,150],[160,190],[170,170],[180,180],
+  [180,220],[200,200],[200,240],[220,220],[230,230],
+  [232,232],[235,235],[238,238],[240,240],[242,248],
+  [245,245],[248,248],[250,255],[252,252],[255,255],
+  [258,258],[260,265],[262,262],[265,265],[268,268],
+  [270,275],[272,272],[275,275],[278,278],[280,285],
+  [282,282],[285,285],[288,288],[290,295],[292,292],
+  [295,295],[296,300],[298,298],[300,300],[300,300],
+  [300,300],[300,300],[300,300],[300,300],
+];
+
+
 // phase enum
 const Phase = {
   MAIN_MENU: 0,
+  LEVEL_SELECT: 1,
   PLAYING: 2,
   ANIMATING: 3,
+  LEVEL_COMPLETE: 4,
   GAME_OVER: 5,
 };
 
@@ -168,7 +195,7 @@ async function loadPuzzleData(level) {
 }
 
 function prefetchLevel(level) {
-  if (PUZZLE_CACHE.has(level)) return;
+  if (level > MAX_LEVEL || PUZZLE_CACHE.has(level)) return;
   loadPuzzleData(level).catch(() => {});
 }
 
@@ -248,13 +275,51 @@ class GameController {
   constructor() {
     this.phase = Phase.MAIN_MENU;
     this.currentLevel = 1;
-    this.lives = EASY_LIVES;
+    this.hardMode = localStorage.getItem("arrows_mode") === "hard";
+    this.maxLives = this.hardMode ? HARD_LIVES : EASY_LIVES;
+    this.lives = this.maxLives;
     this.board = null;
+    this.completedLevels = new Set();
+    this.maxLevelUnlocked = MAX_LEVEL;
+    this._loadProgress();
   }
+
+  _progressKey() {
+    return this.hardMode ? "arrows_save_hard" : "arrows_save_easy";
+  }
+
+  _loadProgress() {
+    try {
+      const d = JSON.parse(localStorage.getItem(this._progressKey()) || "{}");
+      if (d.completed_levels) d.completed_levels.forEach(l => this.completedLevels.add(l));
+      if (d.max_level_unlocked) this.maxLevelUnlocked = Math.max(this.maxLevelUnlocked, d.max_level_unlocked);
+    } catch (e) { /* ignore */ }
+  }
+
+  _saveProgress() {
+    try {
+      localStorage.setItem(this._progressKey(), JSON.stringify({
+        completed_levels: [...this.completedLevels].sort((a, b) => a - b),
+        max_level_unlocked: this.maxLevelUnlocked,
+      }));
+    } catch (e) { /* ignore */ }
+  }
+
+  toggleMode() {
+    this._saveProgress();
+    this.hardMode = !this.hardMode;
+    localStorage.setItem("arrows_mode", this.hardMode ? "hard" : "easy");
+    this.maxLives = this.hardMode ? HARD_LIVES : EASY_LIVES;
+    this.lives = this.maxLives;
+    this.completedLevels = new Set();
+    this.maxLevelUnlocked = MAX_LEVEL;
+    this._loadProgress();
+  }
+
 
   async startLevel(level) {
     this.currentLevel = level;
-    this.lives = EASY_LIVES;
+    this.lives = this.maxLives;
     this.phase = Phase.PLAYING;
 
     try {
@@ -286,6 +351,7 @@ class GameController {
     }
   }
 
+
   update(dt) {
     if (!this.board) return false;
     let anyAnim = false;
@@ -303,7 +369,7 @@ class GameController {
     }
     if (this.phase === Phase.ANIMATING && !anyAnim) {
       if (this.board.isEmpty()) {
-        this.phase = Phase.MAIN_MENU;
+        this.phase = Phase.LEVEL_COMPLETE;
       } else {
         this.phase = Phase.PLAYING;
       }
@@ -311,7 +377,17 @@ class GameController {
     return anyAnim;
   }
 
+  advanceLevel() {
+    this.completedLevels.add(this.currentLevel);
+    const next = Math.min(this.currentLevel + 1, MAX_LEVEL);
+    this.maxLevelUnlocked = Math.max(this.maxLevelUnlocked, next);
+    this._saveProgress();
+    this.phase = Phase.LEVEL_SELECT;
+  }
+
   restartLevel() { this.startLevel(this.currentLevel); }
+  goToLevelSelect() { this.phase = Phase.LEVEL_SELECT; prefetchLevel(this.currentLevel); }
+  goHome() { this.phase = Phase.MAIN_MENU; }
 }
 
 // drawing helpers
@@ -402,22 +478,6 @@ function arrowBodyWidth(screenCellSize) {
   return Math.min(scaledWidth, separationCap);
 }
 
-function drawHeart(ctx, cx, cy, size, color) {
-  const r = size * 0.28;
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(cx - r * 0.7, cy - r * 0.15, r, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.arc(cx + r * 0.7, cy - r * 0.15, r, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.beginPath();
-  ctx.moveTo(cx - size * 0.42, cy + size * 0.05);
-  ctx.lineTo(cx + size * 0.42, cy + size * 0.05);
-  ctx.lineTo(cx, cy + size * 0.48);
-  ctx.closePath();
-  ctx.fill();
-}
 
 // arc-length utils for fly-off
 function arcLengths(wp) {
@@ -451,6 +511,7 @@ class Renderer {
     this.ctx = canvas.getContext("2d");
     this.camera = new Camera();
     this._cameraLevel = -1;
+    this._levelScrollY = 0;
     this._dpr = 1;
     this._w = 0;
     this._h = 0;
@@ -493,7 +554,7 @@ class Renderer {
   }
 
   ensureCamera(ctrl) {
-    if (ctrl.phase === Phase.MAIN_MENU) {
+    if (ctrl.phase === Phase.MAIN_MENU || ctrl.phase === Phase.LEVEL_SELECT) {
       this._cameraLevel = -1;
       return;
     }
@@ -512,19 +573,23 @@ class Renderer {
     this.ensureCamera(ctrl);
 
     if (ctrl.phase === Phase.MAIN_MENU) {
-      this._drawMainMenu(ctx);
+      this._drawMainMenu(ctx, ctrl);
+    } else if (ctrl.phase === Phase.LEVEL_SELECT) {
+      this._drawLevelSelect(ctx, ctrl);
     } else {
       if (ctrl.board) {
         this._drawGridDots(ctx, ctrl);
         this._drawArrows(ctx, ctrl);
       }
-      if (ctrl.phase === Phase.GAME_OVER) {
+      if (ctrl.phase === Phase.LEVEL_COMPLETE) {
+        this._drawLevelComplete(ctx, ctrl);
+      } else if (ctrl.phase === Phase.GAME_OVER) {
         this._drawOverlay(ctx, "Game Over", ARROW_ERROR_COLOR, "Tap to retry");
       }
     }
   }
 
-  _drawMainMenu(ctx) {
+  _drawMainMenu(ctx, ctrl) {
     ctx.fillStyle = ARROW_COLOR;
     ctx.textAlign = "center";
     ctx.font = "bold 38px Arial, sans-serif";
@@ -534,6 +599,108 @@ class Renderer {
     ctx.fillText("Puzzle Escape", this._w / 2, this._h / 2 + 10);
     ctx.font = "15px Arial, sans-serif";
     ctx.fillText("Tap to start", this._w / 2, this._h / 2 + 50);
+
+    const btn = this.modeButtonRect();
+    ctx.fillStyle = ctrl.hardMode ? ARROW_ERROR_COLOR : LEVEL_UNLOCKED_BTN;
+    ctx.beginPath();
+    ctx.roundRect(btn.x, btn.y, btn.w, btn.h, 8);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 15px Arial, sans-serif";
+    ctx.textBaseline = "middle";
+    ctx.fillText(ctrl.hardMode ? "Easy Mode" : "Hard Mode", btn.x + btn.w / 2, btn.y + btn.h / 2);
+
+  }
+
+  modeButtonRect() {
+    const w = 156, h = 42, gap = 10;
+    return { x: (this._w - w) / 2, y: this._h - h * 2 - gap - 28, w, h };
+  }
+
+
+  modeHitTest(x, y) {
+    const btn = this.modeButtonRect();
+    return x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h;
+  }
+
+  _drawLevelSelect(ctx, ctrl) {
+    ctx.fillStyle = ARROW_COLOR;
+    ctx.textAlign = "center";
+    ctx.font = "bold 28px Arial, sans-serif";
+    ctx.fillText(ctrl.hardMode ? "Hard Mode" : "Select Level", this._w / 2, 50);
+    this._drawTextButton(ctx, this.homeButtonRect(), "Home", LEVEL_UNLOCKED_BTN);
+
+    const totalW = LEVEL_BTN_COLS * LEVEL_BTN_SIZE + (LEVEL_BTN_COLS - 1) * LEVEL_BTN_GAP;
+    const startX = (this._w - totalW) / 2;
+
+    for (let lvl = 1; lvl <= MAX_LEVEL; lvl++) {
+      const idx = lvl - 1;
+      const col = idx % LEVEL_BTN_COLS;
+      const row = Math.floor(idx / LEVEL_BTN_COLS);
+      const x = startX + col * (LEVEL_BTN_SIZE + LEVEL_BTN_GAP);
+      const y = LEVEL_SELECT_TOP + row * (LEVEL_BTN_SIZE + LEVEL_BTN_GAP) - this._levelScrollY;
+
+      if (y + LEVEL_BTN_SIZE < 0 || y > this._h) continue;
+
+      let color;
+      if (ctrl.completedLevels.has(lvl)) color = LEVEL_COMPLETED_BTN;
+      else if (lvl <= ctrl.maxLevelUnlocked) color = LEVEL_UNLOCKED_BTN;
+      else color = LEVEL_LOCKED_BTN;
+
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.roundRect(x, y, LEVEL_BTN_SIZE, LEVEL_BTN_SIZE, 8);
+      ctx.fill();
+
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 18px Arial, sans-serif";
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(lvl), x + LEVEL_BTN_SIZE / 2, y + LEVEL_BTN_SIZE / 2 - 4);
+
+    }
+    ctx.textBaseline = "alphabetic";
+  }
+
+  levelHitTest(x, y, ctrl) {
+    const totalW = LEVEL_BTN_COLS * LEVEL_BTN_SIZE + (LEVEL_BTN_COLS - 1) * LEVEL_BTN_GAP;
+    const startX = (this._w - totalW) / 2;
+
+    for (let lvl = 1; lvl <= MAX_LEVEL; lvl++) {
+      const idx = lvl - 1;
+      const col = idx % LEVEL_BTN_COLS;
+      const row = Math.floor(idx / LEVEL_BTN_COLS);
+      const bx = startX + col * (LEVEL_BTN_SIZE + LEVEL_BTN_GAP);
+      const by = LEVEL_SELECT_TOP + row * (LEVEL_BTN_SIZE + LEVEL_BTN_GAP) - this._levelScrollY;
+      if (x >= bx && x <= bx + LEVEL_BTN_SIZE && y >= by && y <= by + LEVEL_BTN_SIZE) {
+        return lvl;
+      }
+    }
+    return null;
+  }
+
+  homeButtonRect() {
+    return { x: 14, y: 18, w: 78, h: 34 };
+  }
+
+  homeHitTest(x, y) {
+    const btn = this.homeButtonRect();
+    return x >= btn.x && x <= btn.x + btn.w && y >= btn.y && y <= btn.y + btn.h;
+  }
+
+
+
+  _drawTextButton(ctx, btn, label, color) {
+    ctx.fillStyle = color;
+    ctx.beginPath();
+    ctx.roundRect(btn.x, btn.y, btn.w, btn.h, 8);
+    ctx.fill();
+    ctx.fillStyle = "#fff";
+    ctx.font = "bold 14px Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(label, btn.x + btn.w / 2, btn.y + btn.h / 2);
+    ctx.textBaseline = "alphabetic";
   }
 
   _drawGridDots(ctx, ctrl) {
@@ -560,6 +727,7 @@ class Renderer {
       }
     }
     ctx.fill();
+
   }
 
   _drawArrows(ctx, ctrl) {
@@ -580,6 +748,7 @@ class Renderer {
 
     const useSmooth = cs >= 8;
     const drawHeads = headSize >= 3;
+    const CHUNK = 500;
     const errorArrows = [];
     const flyArrows = [];
     const normalArrows = [];
@@ -589,51 +758,43 @@ class Renderer {
       if (arrow.errorTimer > 0) { errorArrows.push(arrow); continue; }
       normalArrows.push(arrow);
     }
-
-    // Normal arrows
-    ctx.strokeStyle = ARROW_COLOR;
-    ctx.lineWidth = bw;
-    ctx.lineCap = "round";
-    ctx.lineJoin = "round";
-    ctx.beginPath();
-
-    const headBuf = drawHeads ? [] : null;
-
-    for (const arrow of normalArrows) {
-      const cells = arrow.cells;
-      if (useSmooth) {
-        const wpts = arrow.smoothWorld(crWorld);
-        ctx.moveTo(wpts[0][0] * z + oox, wpts[0][1] * z + ooy);
-        for (let i = 1; i < wpts.length; i++) {
-          ctx.lineTo(wpts[i][0] * z + oox, wpts[i][1] * z + ooy);
-        }
-        if (drawHeads) {
-          const last = wpts[wpts.length - 1];
-          headBuf.push(last[0] * z + oox, last[1] * z + ooy, arrow.direction);
-        }
-      } else {
-        ctx.moveTo((cells[0][1] * csW + hcs) * z + oox, (cells[0][0] * csW + hcs) * z + ooy);
-        for (let i = 1; i < cells.length; i++) {
-          ctx.lineTo((cells[i][1] * csW + hcs) * z + oox, (cells[i][0] * csW + hcs) * z + ooy);
-        }
-        if (drawHeads) {
-          const lc = cells[cells.length - 1];
-          headBuf.push((lc[1] * csW + hcs) * z + oox, (lc[0] * csW + hcs) * z + ooy, arrow.direction);
-        }
-      }
-    }
-    ctx.stroke();
-
-    if (drawHeads && headBuf.length > 0) {
-      ctx.fillStyle = ARROW_COLOR;
+    const drawNormalBatch = (batch, color) => {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = bw;
+      ctx.lineCap = "round";
+      ctx.lineJoin = "round";
+      let pathCount = 0;
+      let headBuf = drawHeads ? [] : null;
       ctx.beginPath();
-      for (let i = 0; i < headBuf.length; i += 3) {
-        this._addHeadPath(ctx, headBuf[i], headBuf[i + 1], headSize, headBuf[i + 2]);
-      }
-      ctx.fill();
-    }
+      for (const arrow of batch) {
+        const [hx, hy] = this._addArrowBodyPath(ctx, arrow, useSmooth, crWorld, z, oox, ooy, hcs, csW);
+        if (drawHeads) headBuf.push(hx, hy, arrow.direction);
 
-    // Error arrows
+        if (++pathCount >= CHUNK) {
+          ctx.stroke();
+          ctx.beginPath();
+          pathCount = 0;
+        }
+      }
+      if (pathCount > 0) ctx.stroke();
+
+      if (drawHeads && headBuf.length > 0) {
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        let hc = 0;
+        for (let i = 0; i < headBuf.length; i += 3) {
+          this._addHeadPath(ctx, headBuf[i], headBuf[i + 1], headSize, headBuf[i + 2]);
+          if (++hc >= CHUNK) {
+            ctx.fill();
+            ctx.beginPath();
+            hc = 0;
+          }
+        }
+        if (hc > 0) ctx.fill();
+      }
+    };
+
+    drawNormalBatch(normalArrows, ARROW_COLOR);
     for (const arrow of errorArrows) {
       const t = arrow.errorTimer / ERROR_FLASH_DURATION;
       const shake = Math.sin(t * Math.PI * 8) * Math.max(1, cs * 0.08);
@@ -673,12 +834,34 @@ class Renderer {
       }
     }
 
-    // Fly-off arrows
     for (const arrow of flyArrows) {
       const centers = arrow.cells.map(([r, c]) => this.cellCenter(r, c));
       const cr = cs * ARROW_CORNER_RADIUS_RATIO;
       this._drawArrowFlying(ctx, arrow, centers, cs, headSize, cr, bw);
     }
+  }
+
+  _addArrowBodyPath(ctx, arrow, useSmooth, crWorld, z, oox, ooy, hcs, csW) {
+    const cells = arrow.cells;
+    if (useSmooth) {
+      const wpts = arrow.smoothWorld(crWorld);
+      ctx.moveTo(wpts[0][0] * z + oox, wpts[0][1] * z + ooy);
+      for (let i = 1; i < wpts.length; i++) {
+        ctx.lineTo(wpts[i][0] * z + oox, wpts[i][1] * z + ooy);
+      }
+      const last = wpts[wpts.length - 1];
+      return [last[0] * z + oox, last[1] * z + ooy];
+    }
+
+    let sx = (cells[0][1] * csW + hcs) * z + oox;
+    let sy = (cells[0][0] * csW + hcs) * z + ooy;
+    ctx.moveTo(sx, sy);
+    for (let i = 1; i < cells.length; i++) {
+      sx = (cells[i][1] * csW + hcs) * z + oox;
+      sy = (cells[i][0] * csW + hcs) * z + ooy;
+      ctx.lineTo(sx, sy);
+    }
+    return [sx, sy];
   }
 
   _addHeadPath(ctx, cx, cy, size, direction) {
@@ -735,10 +918,31 @@ class Renderer {
     }
 
     const alpha = Math.max(0, 1 - eased * 0.8);
-    const color = lerpColor(ARROW_COLOR, ARROW_FLY_COLOR, eased * 0.6);
+    const baseColor = ARROW_COLOR;
+    const color = lerpColor(baseColor, ARROW_FLY_COLOR, eased * 0.6);
     drawArrowBody(ctx, dense, color, bw, alpha, 0);
     const [fx, fy] = cellPos[cellPos.length - 1];
     drawArrowhead(ctx, fx, fy, headSize, arrow.direction, color, alpha);
+  }
+
+  _drawLevelComplete(ctx, ctrl) {
+    ctx.save();
+    ctx.fillStyle = "rgba(255,255,255,0.85)";
+    ctx.fillRect(0, 0, this._w, this._h);
+    const cx = this._w / 2;
+    let y = this._h / 2 - 80;
+
+    ctx.fillStyle = LEVEL_COMPLETE_COLOR;
+    ctx.textAlign = "center";
+    ctx.font = "bold 36px Arial, sans-serif";
+    ctx.fillText("Level Complete!", cx, y);
+    y += 44;
+
+
+    ctx.fillStyle = HUD_TEXT_COLOR;
+    ctx.font = "16px Arial, sans-serif";
+    ctx.fillText("Tap to continue", cx, y);
+    ctx.restore();
   }
 
   _drawOverlay(ctx, title, color, hint) {
@@ -761,7 +965,26 @@ function setupInput(canvas, renderer, ctrl) {
   function handlePointerDown(x, y) {
     const phase = ctrl.phase;
     if (phase === Phase.MAIN_MENU) {
-      ctrl.startLevel(1);
+      if (renderer.modeHitTest(x, y)) {
+        ctrl.toggleMode();
+        return;
+      }
+      return;
+    }
+    if (phase === Phase.LEVEL_SELECT) {
+      if (renderer.homeHitTest(x, y)) {
+        ctrl.goHome();
+        renderer._levelScrollY = 0;
+        return;
+      }
+      const lvl = renderer.levelHitTest(x, y, ctrl);
+      if (lvl !== null && lvl <= ctrl.maxLevelUnlocked) {
+        ctrl.startLevel(lvl);
+      }
+      return;
+    }
+    if (phase === Phase.LEVEL_COMPLETE) {
+      ctrl.advanceLevel();
       return;
     }
     if (phase === Phase.GAME_OVER) {
@@ -773,9 +996,11 @@ function setupInput(canvas, renderer, ctrl) {
     }
   }
 
+
   function handlePointerUp(x, y) {
     if (renderer.camera.isDragging) {
-      const wasDrag = renderer.camera._dragMoved >= DRAG_THRESHOLD;
+      const threshold = DRAG_THRESHOLD;
+      const wasDrag = renderer.camera._dragMoved >= threshold;
       renderer.camera.endDrag();
       if (!wasDrag && (ctrl.phase === Phase.PLAYING || ctrl.phase === Phase.ANIMATING) && ctrl.board) {
         const cell = renderer.screenToCell(x, y, ctrl.board);
@@ -804,11 +1029,33 @@ function setupInput(canvas, renderer, ctrl) {
   // wheel zoom
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
-    if (ctrl.phase === Phase.PLAYING || ctrl.phase === Phase.ANIMATING) {
+    if (ctrl.phase === Phase.LEVEL_SELECT) {
+      renderer._levelScrollY += e.deltaY * 0.5;
+      renderer._levelScrollY = Math.max(0, renderer._levelScrollY);
+      const maxRows = Math.ceil(MAX_LEVEL / LEVEL_BTN_COLS);
+      const maxScroll = Math.max(0, maxRows * (LEVEL_BTN_SIZE + LEVEL_BTN_GAP) + LEVEL_SELECT_TOP - renderer.height + 40);
+      renderer._levelScrollY = Math.min(renderer._levelScrollY, maxScroll);
+    } else if (ctrl.phase === Phase.PLAYING || ctrl.phase === Phase.ANIMATING) {
       renderer.camera.applyZoom(e.deltaY < 0 ? 1 : -1, e.clientX, e.clientY);
     }
     markDirty();
   }, { passive: false });
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (ctrl.phase === Phase.PLAYING || ctrl.phase === Phase.ANIMATING) {
+        ctrl.goToLevelSelect();
+        renderer._cameraLevel = -1;
+      }
+    }
+    if (e.key === " ") {
+      e.preventDefault();
+      if (ctrl.phase === Phase.LEVEL_COMPLETE) ctrl.advanceLevel();
+      else if (ctrl.phase === Phase.MAIN_MENU) ctrl.goToLevelSelect();
+      else if (ctrl.phase === Phase.GAME_OVER) ctrl.restartLevel();
+    }
+    markDirty();
+  });
 }
 
 // game loop
