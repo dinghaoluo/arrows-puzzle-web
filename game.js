@@ -27,6 +27,7 @@ const ARROW_CORNER_RADIUS_RATIO = 0.22;
 const HUD_HEIGHT = 54;
 const CELL_SIZE_WORLD = 8;
 const DRAG_THRESHOLD = 5;
+const TOUCH_DRAG_THRESHOLD = 15;
 const MIN_ZOOM = 0.05;
 const MAX_ZOOM = 5.0;
 const ZOOM_STEP = 1.15;
@@ -1187,6 +1188,11 @@ class Renderer {
 
 // input handling
 function setupInput(canvas, renderer, ctrl) {
+  let touchId = null;
+  let pinchDist0 = null;
+  let pinchZoom0 = null;
+  let touchGestureCancelled = false;
+
   function handlePointerDown(x, y) {
     const phase = ctrl.phase;
     if (phase === Phase.MAIN_MENU) {
@@ -1226,10 +1232,11 @@ function setupInput(canvas, renderer, ctrl) {
     }
   }
 
+  let isTouch = false;
 
   function handlePointerUp(x, y) {
     if (renderer.camera.isDragging) {
-      const threshold = DRAG_THRESHOLD;
+      const threshold = isTouch ? TOUCH_DRAG_THRESHOLD : DRAG_THRESHOLD;
       const wasDrag = renderer.camera._dragMoved >= threshold;
       renderer.camera.endDrag();
       if (!wasDrag && (ctrl.phase === Phase.PLAYING || ctrl.phase === Phase.ANIMATING) && ctrl.board) {
@@ -1247,7 +1254,7 @@ function setupInput(canvas, renderer, ctrl) {
 
   // mouse
   canvas.addEventListener("mousedown", (e) => {
-    handlePointerDown(e.clientX, e.clientY); markDirty();
+    isTouch = false; handlePointerDown(e.clientX, e.clientY); markDirty();
   });
   canvas.addEventListener("mousemove", (e) => {
     handlePointerMove(e.clientX, e.clientY); if (renderer.camera.isDragging) markDirty();
@@ -1271,6 +1278,86 @@ function setupInput(canvas, renderer, ctrl) {
     markDirty();
   }, { passive: false });
 
+  // touch
+  canvas.addEventListener("touchstart", (e) => {
+    e.preventDefault();
+    isTouch = true;
+    if (e.touches.length >= 2) {
+      touchGestureCancelled = true;
+      if (renderer.camera.isDragging) renderer.camera.endDrag();
+      const dx = e.touches[1].clientX - e.touches[0].clientX;
+      const dy = e.touches[1].clientY - e.touches[0].clientY;
+      pinchDist0 = Math.hypot(dx, dy);
+      pinchZoom0 = renderer.camera.zoom;
+      return;
+    }
+    if (e.touches.length === 1) {
+      touchId = e.touches[0].identifier;
+      handlePointerDown(e.touches[0].clientX, e.touches[0].clientY);
+    }
+    markDirty();
+  }, { passive: false });
+
+  canvas.addEventListener("touchmove", (e) => {
+    e.preventDefault();
+    if (e.touches.length >= 2) {
+      touchGestureCancelled = true;
+      const dx = e.touches[1].clientX - e.touches[0].clientX;
+      const dy = e.touches[1].clientY - e.touches[0].clientY;
+      const dist = Math.hypot(dx, dy);
+      if (dist <= 0) return;
+      if (pinchDist0 === null || pinchDist0 <= 0) {
+        pinchDist0 = dist;
+        pinchZoom0 = renderer.camera.zoom;
+      }
+      const mx = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+      const my = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+      const oldZoom = renderer.camera.zoom;
+      renderer.camera.zoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, pinchZoom0 * (dist / pinchDist0)));
+      const ratio = renderer.camera.zoom / oldZoom;
+      renderer.camera.ox = mx - (mx - renderer.camera.ox) * ratio;
+      renderer.camera.oy = my - (my - renderer.camera.oy) * ratio;
+      markDirty();
+      return;
+    }
+    if (e.touches.length === 1 && !touchGestureCancelled) {
+      handlePointerMove(e.touches[0].clientX, e.touches[0].clientY);
+      if (renderer.camera.isDragging) markDirty();
+    }
+  }, { passive: false });
+
+  canvas.addEventListener("touchend", (e) => {
+    e.preventDefault();
+    pinchDist0 = null;
+    if (touchGestureCancelled) {
+      if (renderer.camera.isDragging) renderer.camera.endDrag();
+      if (e.touches.length === 0) {
+        touchGestureCancelled = false;
+        touchId = null;
+      }
+      markDirty();
+      return;
+    }
+    if (e.changedTouches.length > 0) {
+      const t = e.changedTouches[0];
+      if (t.identifier === touchId) {
+        handlePointerUp(t.clientX, t.clientY);
+        touchId = null;
+      }
+    }
+    markDirty();
+  }, { passive: false });
+
+  canvas.addEventListener("touchcancel", (e) => {
+    e.preventDefault();
+    pinchDist0 = null;
+    touchGestureCancelled = false;
+    touchId = null;
+    if (renderer.camera.isDragging) renderer.camera.endDrag();
+    markDirty();
+  }, { passive: false });
+
+  // keyboard
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") {
       if (ctrl.phase === Phase.PLAYING || ctrl.phase === Phase.ANIMATING) {
