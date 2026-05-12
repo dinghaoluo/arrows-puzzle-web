@@ -1,4 +1,4 @@
-# arrows_puzzle_web
+# arrows-puzzle-web
 
 This is a static web-bsaed implementation of an arrows puzzle game inspired by *Arrows Puzzle Escape*, a game about clearing a crowded board of winding arrows. 
 
