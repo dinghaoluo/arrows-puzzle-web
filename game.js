@@ -213,8 +213,25 @@ function puzzleUrl(level) {
 
 async function loadPuzzleData(level) {
   if (PUZZLE_CACHE.has(level)) return PUZZLE_CACHE.get(level);
-  const resp = await fetch(puzzleUrl(level));
-  const data = await resp.json();
+  let data;
+  try {
+    const resp = await fetch(puzzleUrl(level));
+    data = await resp.json();
+  } catch (_) {
+    data = await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("GET", puzzleUrl(level), true);
+      xhr.onload = () => {
+        if (xhr.status === 200 || xhr.status === 0) {
+          resolve(JSON.parse(xhr.responseText));
+        } else {
+          reject(new Error("XHR failed: " + xhr.status));
+        }
+      };
+      xhr.onerror = () => reject(new Error("XHR network error"));
+      xhr.send();
+    });
+  }
   PUZZLE_CACHE.set(level, data);
   return data;
 }
@@ -381,6 +398,8 @@ class GameController {
       prefetchLevel(level + 1);
     } catch (e) {
       console.error("Failed to load level", level, e);
+      this.phase = Phase.MAIN_MENU;
+      this._loadError = true;
     }
   }
 
@@ -784,6 +803,13 @@ class Renderer {
     ctx.fillText("Puzzle Escape", this._w / 2, this._h / 2 + 10);
     ctx.font = "15px Arial, sans-serif";
     ctx.fillText("Tap to start", this._w / 2, this._h / 2 + 50);
+
+    if (ctrl._loadError) {
+      ctx.fillStyle = ARROW_ERROR_COLOR;
+      ctx.font = "14px Arial, sans-serif";
+      ctx.fillText("Failed to load puzzle data.", this._w / 2, this._h / 2 + 80);
+      ctx.fillText("Please use a local HTTP server (e.g. npx serve).", this._w / 2, this._h / 2 + 100);
+    }
 
     const btn = this.modeButtonRect();
     ctx.fillStyle = ctrl.hardMode ? ARROW_ERROR_COLOR : LEVEL_UNLOCKED_BTN;
